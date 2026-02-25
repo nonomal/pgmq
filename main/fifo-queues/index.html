@@ -19,7 +19,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.2">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.3">
     
     
       
@@ -635,6 +635,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#pgmqread_grouped_headqueue_name-vt-qty" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pgmq.read_grouped_head(queue_name, vt, qty)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -873,6 +884,17 @@
     <span class="md-ellipsis">
       
         Throughput Optimization (pgmq.read_grouped())
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#one-per-group-pgmqread_grouped_head" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-per-Group (pgmq.read_grouped_head())
       
     </span>
   </a>
@@ -1162,6 +1184,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#pgmqread_grouped_headqueue_name-vt-qty" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pgmq.read_grouped_head(queue_name, vt, qty)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1407,6 +1440,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#one-per-group-pgmqread_grouped_head" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-per-Group (pgmq.read_grouped_head())
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#choosing-the-right-strategy" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1496,16 +1540,20 @@
 </code></pre></div>
 
 <h3 id="reading-fifo-messages">Reading FIFO Messages<a class="headerlink" href="#reading-fifo-messages" title="Permanent link">&para;</a></h3>
-<p>PGMQ provides two FIFO reading strategies. Choose the one that best fits your workload:</p>
+<p>PGMQ provides three FIFO reading strategies. Choose the one that best fits your workload:</p>
 <ul>
 <li><code>pgmq.read_grouped_rr(...)</code> (Round-Robin, layered interleaving): Fairly interleaves messages across groups. Great for multi-tenant and user-centric workloads.</li>
 <li><code>pgmq.read_grouped(...)</code> (SQS-style throughput): Fills batches from the oldest eligible group first, returning multiple messages from the same group for throughput.</li>
+<li><code>pgmq.read_grouped_head(...)</code> (One-per-group): Returns exactly one message per group (the head of each group), up to N groups. Ideal for parallel, per-group processing.</li>
 </ul>
 <div class="codehilite"><pre><span></span><code><span class="c1">-- Fair distribution across groups (round-robin, layered)</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">pgmq</span><span class="p">.</span><span class="n">read_grouped_rr</span><span class="p">(</span><span class="s1">&#39;my_queue&#39;</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">);</span>
 
 <span class="c1">-- Throughput-optimized, SQS-style batch filling</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">pgmq</span><span class="p">.</span><span class="n">read_grouped</span><span class="p">(</span><span class="s1">&#39;my_queue&#39;</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">);</span>
+
+<span class="c1">-- One message per group, up to 5 groups</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">pgmq</span><span class="p">.</span><span class="n">read_grouped_head</span><span class="p">(</span><span class="s1">&#39;my_queue&#39;</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">);</span>
 </code></pre></div>
 
 <p>Round-robin (RR) will:
@@ -1516,6 +1564,12 @@
 - Fill the batch from the earliest eligible group first
 - Return multiple messages from the same group when available
 - Move to other groups only if needed to fill the batch</p>
+<p>Head-per-group will:</p>
+<ul>
+<li>Return at most one message per FIFO group (the oldest available message in that group)</li>
+<li>Dispatch up to N groups in a single read call</li>
+<li>Ensure strict per-group ordering while enabling parallel group processing</li>
+</ul>
 <h3 id="default-group-behavior">Default Group Behavior<a class="headerlink" href="#default-group-behavior" title="Permanent link">&para;</a></h3>
 <p>Messages without the <code>x-pgmq-group</code> header are treated as belonging to a single default group:</p>
 <div class="codehilite"><pre><span></span><code><span class="c1">-- These messages will be processed in FIFO order relative to each other</span>
@@ -1542,6 +1596,31 @@
 - Maintains strict FIFO ordering within each group</p>
 <h4 id="pgmqread_grouped_with_pollqueue_name-vt-qty-max_poll_seconds-poll_interval_ms"><code>pgmq.read_grouped_with_poll(queue_name, vt, qty, max_poll_seconds, poll_interval_ms)</code><a class="headerlink" href="#pgmqread_grouped_with_pollqueue_name-vt-qty-max_poll_seconds-poll_interval_ms" title="Permanent link">&para;</a></h4>
 <p>Same as <code>read_grouped()</code> but with polling support for real-time processing.</p>
+<h4 id="pgmqread_grouped_headqueue_name-vt-qty"><code>pgmq.read_grouped_head(queue_name, vt, qty)</code><a class="headerlink" href="#pgmqread_grouped_headqueue_name-vt-qty" title="Permanent link">&para;</a></h4>
+<p>Read exactly one message per FIFO group — the head (oldest, lowest <code>msg_id</code>) message in each group — across up to <code>qty</code> groups in a single operation. Only groups with a visible, unlocked head message are included.</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>queue_name</code> (text): Name of the queue</li>
+<li><code>vt</code> (integer): Visibility timeout in seconds applied to each returned message</li>
+<li><code>qty</code> (integer): Maximum number of groups (and therefore messages) to return</li>
+</ul>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Determines the absolute head <code>msg_id</code> per FIFO group, regardless of current visibility</li>
+<li>Skips groups whose head message is not visible (being processed by another worker)</li>
+<li>Returns at most one message per group, ordered by <code>msg_id</code></li>
+<li>Uses <code>FOR UPDATE SKIP LOCKED</code> for safe concurrent access</li>
+</ul>
+<p><strong>Use when:</strong></p>
+<ul>
+<li>Horizontal scaling: multiple processes each call <code>read_grouped_head()</code> and handle distinct groups</li>
+<li>Process groups in parallel</li>
+</ul>
+<p><strong>Example:</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="c1">-- Claim the head message from up to 10 groups, locking them for 30 seconds</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">pgmq</span><span class="p">.</span><span class="n">read_grouped_head</span><span class="p">(</span><span class="s1">&#39;my_queue&#39;</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">);</span>
+</code></pre></div>
+
 <h3 id="utility-functions">Utility Functions<a class="headerlink" href="#utility-functions" title="Permanent link">&para;</a></h3>
 <h4 id="pgmqcreate_fifo_indexqueue_name"><code>pgmq.create_fifo_index(queue_name)</code><a class="headerlink" href="#pgmqcreate_fifo_indexqueue_name" title="Permanent link">&para;</a></h4>
 <p>Creates a GIN index on the headers column to improve FIFO read performance. Recommended when using FIFO functionality frequently.</p>
@@ -1630,10 +1709,12 @@
 <span class="c1">-- Returns (layered interleaving): A1, B1, C1, A2, B2, C2, A3, B3, A4, ...</span>
 </code></pre></div>
 
-<p><strong>Best for:</strong>
-- Ensuring fair processing across all groups
-- Preventing starvation of groups with fewer messages
-- Load balancing across different workflows</p>
+<p><strong>Best for:</strong></p>
+<ul>
+<li>Ensuring fair processing across all groups</li>
+<li>Preventing starvation of groups with fewer messages</li>
+<li>Load balancing across different workflows</li>
+</ul>
 <h3 id="throughput-optimization-pgmqread_grouped">Throughput Optimization (<code>pgmq.read_grouped()</code>)<a class="headerlink" href="#throughput-optimization-pgmqread_grouped" title="Permanent link">&para;</a></h3>
 <p>Attempts to fill the batch from the earliest group first:</p>
 <div class="codehilite"><pre><span></span><code><span class="c1">-- With groups A (5 messages), B (3 messages), C (2 messages)</span>
@@ -1648,6 +1729,22 @@
 - Maximizing throughput for related messages
 - Processing workflows where batching related messages is beneficial
 - Mimicking AWS SQS FIFO behavior exactly</p>
+<h3 id="one-per-group-pgmqread_grouped_head">One-per-Group (<code>pgmq.read_grouped_head()</code>)<a class="headerlink" href="#one-per-group-pgmqread_grouped_head" title="Permanent link">&para;</a></h3>
+<p>Returns exactly one message per FIFO group, up to N groups:</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">-- With groups A (5 messages), B (3 messages), C (2 messages)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">pgmq</span><span class="p">.</span><span class="n">read_grouped_head</span><span class="p">(</span><span class="s1">&#39;queue&#39;</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">);</span>
+<span class="c1">-- Returns: 3 messages — 1 from A, 1 from B, 1 from C</span>
+
+<span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">pgmq</span><span class="p">.</span><span class="n">read_grouped_head</span><span class="p">(</span><span class="s1">&#39;queue&#39;</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">);</span>
+<span class="c1">-- Returns: 2 messages — 1 from A, 1 from B (oldest two groups)</span>
+</code></pre></div>
+
+<p><strong>Best for:</strong></p>
+<ul>
+<li>Horizontal scaling scenarios where groups map to independent units of work (e.g. ordering key)</li>
+<li>Parallel per-group processing: spawn one worker per active group</li>
+<li>Strict per-group ordering with no intra-group batching</li>
+</ul>
 <h3 id="choosing-the-right-strategy">Choosing the Right Strategy<a class="headerlink" href="#choosing-the-right-strategy" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1682,6 +1779,16 @@
 <td>Financial transactions</td>
 <td><code>read_grouped()</code></td>
 <td>Batch related transactions for efficiency</td>
+</tr>
+<tr>
+<td>Parallel per-group workers</td>
+<td><code>read_grouped_head()</code></td>
+<td>One outstanding message per group at a time</td>
+</tr>
+<tr>
+<td>Horizontally scaled consumers</td>
+<td><code>read_grouped_head()</code></td>
+<td>Safely dispatches distinct groups to separate workers</td>
 </tr>
 </tbody>
 </table>
