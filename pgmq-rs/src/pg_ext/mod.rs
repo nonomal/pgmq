@@ -2,14 +2,11 @@ mod visibility_timeout_offest;
 
 use crate::errors::PgmqError;
 use crate::types::{Message, QUEUE_PREFIX};
-#[cfg(feature = "cli")]
-use crate::util::install_pgmq;
 use crate::util::{check_input, connect};
 use log::info;
 use serde::{Deserialize, Serialize};
 use sqlx::types::chrono::Utc;
-use sqlx::{Pool, Postgres, Row};
-
+use sqlx::{Acquire, Pool, Postgres, Row};
 pub use visibility_timeout_offest::VisibilityTimeoutOffset;
 
 const DEFAULT_POLL_TIMEOUT_S: i32 = 5;
@@ -46,29 +43,109 @@ impl PGMQueueExt {
         }
     }
 
-    #[cfg(feature = "cli")]
+    #[cfg(feature = "install-sql-github")]
+    #[deprecated(
+        note = "Use install_sql_from_github_with_cxn/install_sql_from_github or install_sql_embedded_with_cxn/install_sql_embedded instead.",
+        since = "0.33.0"
+    )]
     pub async fn install_sql_with_cxn(
         &self,
         pool: &Pool<Postgres>,
         version: Option<&String>,
     ) -> Result<(), PgmqError> {
-        install_pgmq(pool, version).await
+        self.install_sql_from_github_with_cxn(pool, version.map(|v| v.as_str()))
+            .await
     }
 
-    #[cfg(feature = "cli")]
+    #[cfg(feature = "install-sql-github")]
+    #[deprecated(
+        note = "Use install_sql_from_github_with_cxn/install_sql_from_github or install_sql_embedded_with_cxn/install_sql_embedded instead.",
+        since = "0.33.0"
+    )]
     pub async fn install_sql(&self, version: Option<&String>) -> Result<(), PgmqError> {
-        self.install_sql_with_cxn(&self.connection, version).await
+        self.install_sql_from_github(version.map(|v| v.as_str()))
+            .await
     }
 
-    pub async fn init_with_cxn<'c, E: sqlx::Executor<'c, Database = Postgres>>(
+    #[cfg(feature = "install-sql")]
+    #[doc = include_str!("../install/init_migrations_table.md")]
+    pub async fn init_migrations_table_with_cxn(
+        &self,
+        pool: &Pool<Postgres>,
+        version: &str,
+    ) -> Result<(), PgmqError> {
+        use std::str::FromStr;
+        crate::install::init_migrations_table(pool, crate::install::Version::from_str(version)?)
+            .await
+    }
+
+    #[cfg(feature = "install-sql")]
+    #[doc = include_str!("../install/init_migrations_table.md")]
+    pub async fn init_migrations_table(&self, version: &str) -> Result<(), PgmqError> {
+        self.init_migrations_table_with_cxn(&self.connection, version)
+            .await
+    }
+
+    #[cfg(feature = "install-sql")]
+    #[doc = include_str!("../install/installed_version.md")]
+    pub async fn installed_version_with_cxn(
+        &self,
+        pool: &Pool<Postgres>,
+    ) -> Result<Option<crate::install::Version>, PgmqError> {
+        crate::install::installed_version(pool).await
+    }
+
+    #[cfg(feature = "install-sql")]
+    #[doc = include_str!("../install/installed_version.md")]
+    pub async fn installed_version(&self) -> Result<Option<crate::install::Version>, PgmqError> {
+        self.installed_version_with_cxn(&self.connection).await
+    }
+
+    #[cfg(feature = "install-sql-github")]
+    #[doc = include_str!("../install/github/install_sql_github.md")]
+    pub async fn install_sql_from_github_with_cxn(
+        &self,
+        pool: &Pool<Postgres>,
+        version: Option<&str>,
+    ) -> Result<(), PgmqError> {
+        crate::install::install_sql_from_github(pool, version).await
+    }
+
+    #[cfg(feature = "install-sql-github")]
+    #[doc = include_str!("../install/github/install_sql_github.md")]
+    pub async fn install_sql_from_github(&self, version: Option<&str>) -> Result<(), PgmqError> {
+        self.install_sql_from_github_with_cxn(&self.connection, version)
+            .await
+    }
+
+    #[cfg(feature = "install-sql-embedded")]
+    #[doc = include_str!("../install/embedded/install_sql_embedded.md")]
+    pub async fn install_sql_from_embedded_with_cxn(
+        &self,
+        pool: &Pool<Postgres>,
+    ) -> Result<(), PgmqError> {
+        crate::install::install_sql_from_embedded(pool).await
+    }
+
+    #[cfg(feature = "install-sql-embedded")]
+    #[doc = include_str!("../install/embedded/install_sql_embedded.md")]
+    pub async fn install_sql_from_embedded(&self) -> Result<(), PgmqError> {
+        self.install_sql_from_embedded_with_cxn(&self.connection)
+            .await
+    }
+
+    pub async fn init_with_cxn<'c, E: sqlx::Acquire<'c, Database = Postgres>>(
         &self,
         executor: E,
     ) -> Result<bool, PgmqError> {
+        let mut tx = executor.begin().await?;
+        crate::util::init_lock(&mut tx).await?;
         sqlx::query("CREATE EXTENSION IF NOT EXISTS pgmq CASCADE;")
-            .execute(executor)
+            .execute(tx.acquire().await?)
             .await
-            .map(|_| true)
-            .map_err(PgmqError::from)
+            .map(|_| true)?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn init(&self) -> Result<bool, PgmqError> {
@@ -84,13 +161,18 @@ impl PGMQueueExt {
         E: sqlx::Acquire<'c, Database = Postgres>,
     {
         check_input(queue_name)?;
-        let mut conn = executor.acquire().await?;
+        let mut tx = executor.begin().await?;
+
+        sqlx::query("SELECT * from pgmq.acquire_queue_lock(queue_name=>$1::text);")
+            .bind(queue_name)
+            .execute(tx.acquire().await?)
+            .await?;
 
         let exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM pgmq.meta WHERE queue_name = $1::text);",
         )
         .bind(queue_name)
-        .fetch_one(&mut *conn)
+        .fetch_one(tx.acquire().await?)
         .await?;
 
         if exists {
@@ -99,8 +181,11 @@ impl PGMQueueExt {
 
         sqlx::query("SELECT * from pgmq.create(queue_name=>$1::text);")
             .bind(queue_name)
-            .execute(&mut *conn)
+            .execute(tx.acquire().await?)
             .await?;
+
+        tx.commit().await?;
+
         Ok(true)
     }
     /// Errors when there is any database error and Ok(false) when the queue already exists.
